@@ -1,0 +1,22 @@
+# Ambiente virtual Python
+.venv/
+venv/
+env/
+
+# Artefatos gerados pelo PyInstaller
+build/
+dist/
+*.spec
+
+# Dados pessoais do app (não faz sentido versionar o histórico da sua equipe)
+dados_equipe.json
+config_app.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Arquivos de teste/rascunho avulsos, caso ainda sobre algum na pasta
+sql/migracao.sql
+teste*.py
+scratch*.py
