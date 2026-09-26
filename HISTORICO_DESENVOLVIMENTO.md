@@ -193,6 +193,57 @@ antiga?
   deliberadamente o filtro de ativo/inativo, já que o objetivo aqui é justamente
   comparar a versão desativada com a atual.
 
+## v1.13 — Integração com PostgreSQL (envio/carregamento manual)
+
+**Motivação:** paralelamente ao desenvolvimento do app, o usuário estudava SQL e
+PostgreSQL. Fazia sentido usar o próprio projeto como campo de prática: modelar as
+mesmas informações num banco relacional de verdade, além do JSON local.
+
+**Mudanças:**
+- Modelagem inicial em 4 tabelas (`pessoas`, `resultados_area`, `corridas`,
+  `animo_registros`), ligadas por chave estrangeira (`pessoa_id`).
+- Script `sql/migrar_para_sql.py`, que converte o `dados_equipe.json` em um
+  arquivo `.sql` de `INSERT`s pronto para rodar no pgAdmin — permitindo migrar o
+  histórico já coletado sem digitar tudo de novo.
+- Integração direta no app: menu "Banco de Dados" com "Configurar conexão...",
+  "Enviar dados para o banco" e "Carregar dados do banco", usando `psycopg2`. A
+  sincronização é sempre manual e sob confirmação (nunca automática), para evitar
+  substituir dados por engano.
+- Toda a integração (schema, script de migração e as funções do app) foi testada
+  contra um PostgreSQL real antes da entrega, não só validada por leitura de
+  código — incluindo o ciclo completo "enviar dados → carregar de volta →
+  comparar com o original" para garantir que nada se perdia no caminho.
+
+## v1.14 — Reestruturação do schema: `pessoas` → `umas` + `builds`
+
+**Motivação:** durante o estudo de modelagem de dados, o usuário questionou por
+que o sistema de builds usava uma coluna `nome_base` redundante em vez de uma
+tabela própria — percebendo que "uma Uma pode ter várias builds" é uma relação
+um-para-muitos de verdade, não só um atributo de texto repetido. Essa foi uma
+correção de modelagem proposta pelo próprio usuário, não uma limitação percebida
+previamente.
+
+**Mudanças:**
+- Novas tabelas `umas` (a personagem base, nome único) e `builds` (cada versão
+  específica, ligada à sua uma via `uma_id`, carregando a tag/build e o status
+  ativo/inativo).
+- As tabelas `resultados_area`, `corridas` e `animo_registros` passaram a apontar
+  para `build_id` em vez de `pessoa_id`.
+- Script de migração de schema (`sql/migrar_schema_v2.sql`) escrito como uma
+  transação única (`BEGIN`/`COMMIT`): cria as tabelas novas, migra o dado
+  existente linha a linha, só depois remove a estrutura antiga — garantindo que uma
+  falha no meio do processo desfaz tudo automaticamente, sem deixar o banco pela
+  metade.
+- Consequência direta: as funções de integração do app (v1.13) referenciavam a
+  tabela `pessoas`, que deixou de existir. Ambas (`enviar_dados_para_bd` e
+  `carregar_dados_do_bd`) foram reescritas para o novo modelo em duas etapas
+  (criar/ler `umas` primeiro, depois `builds`), e o `schema.sql`/
+  `migrar_para_sql.py` também foram atualizados para gerar o schema atual direto,
+  sem exigir o passo intermediário de migração em instalações novas.
+- Todas as mudanças foram testadas de ponta a ponta contra um PostgreSQL real
+  (schema novo → popular → simular exatamente a lógica das funções do app →
+  validar contagens) antes da entrega.
+
 ---
 
 ## Decisões de design recorrentes
@@ -210,6 +261,16 @@ portfólio:
   vínculo ânimo-resultado (v1.9) nasceram de tentar evitar conclusões erradas
   (média distorcida por outliers, variância sem causa identificada).
 - **Migração automática de dados antigos.** Toda mudança de estrutura de dados
-  (v1.2, v1.6, v1.8, v1.12) veio acompanhada de uma função de migração, para que
-  arquivos salvos em versões anteriores continuassem funcionando sem
+  (v1.2, v1.6, v1.8, v1.12, v1.14) veio acompanhada de uma função ou script de
+  migração, para que dados de versões anteriores continuassem funcionando sem
   intervenção manual do usuário.
+- **Mudança de schema nunca isolada.** A v1.14 deixou claro que alterar a
+  estrutura do banco tem efeito cascata sobre qualquer código que dependa dela —
+  a integração do app com o banco (v1.13) teve que ser atualizada junto, e as
+  duas mudanças foram tratadas como uma unidade, testadas juntas antes de
+  qualquer entrega.
+- **Testar contra o sistema real antes de entregar.** Nenhuma mudança de SQL ou
+  de integração com banco foi considerada "pronta" só por compilar ou parecer
+  correta lendo o código — todas foram validadas rodando de fato contra um
+  PostgreSQL, comparando contagens e conteúdo antes e depois.
+

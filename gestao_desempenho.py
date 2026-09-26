@@ -382,8 +382,8 @@ class GestaoDesempenhoApp:
             return
         if not messagebox.askyesno(
             "Confirmar envio",
-            "Isso vai APAGAR tudo que já está nas 4 tabelas do banco e substituir pelos "
-            "dados que estão na tela agora. Continuar?",
+            "Isso vai APAGAR tudo que já está nas 5 tabelas do banco (umas, builds e os "
+            "registros) e substituir pelos dados que estão na tela agora. Continuar?",
         ):
             return
 
@@ -395,40 +395,52 @@ class GestaoDesempenhoApp:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "TRUNCATE TABLE resultados_area, corridas, animo_registros, pessoas RESTART IDENTITY CASCADE;"
+                        "TRUNCATE TABLE resultados_area, corridas, animo_registros, builds, umas "
+                        "RESTART IDENTITY CASCADE;"
                     )
+
+                    # 1) Uma linha em "umas" por nome_base distinto
+                    mapa_uma_id = {}
+                    nomes_base = sorted({info.get("nome_base", nome) for nome, info in self.dados.items()})
+                    for nome_base in nomes_base:
+                        cur.execute("INSERT INTO umas (nome) VALUES (%s) RETURNING id;", (nome_base,))
+                        mapa_uma_id[nome_base] = cur.fetchone()[0]
+
+                    # 2) Uma linha em "builds" por pessoa/build cadastrada no app
                     total_resultados = total_corridas = total_animo = 0
                     for nome, info in self.dados.items():
+                        nome_base = info.get("nome_base", nome)
                         cur.execute(
-                            "INSERT INTO pessoas (nome, nome_base, tag, ativo) VALUES (%s, %s, %s, %s) RETURNING id;",
-                            (nome, info.get("nome_base", nome), info.get("tag") or None, info.get("ativo", True)),
+                            "INSERT INTO builds (uma_id, nome_build, tag, ativo) VALUES (%s, %s, %s, %s) "
+                            "RETURNING id;",
+                            (mapa_uma_id[nome_base], nome, info.get("tag") or None, info.get("ativo", True)),
                         )
-                        pessoa_id = cur.fetchone()[0]
+                        build_id = cur.fetchone()[0]
 
                         for area, registros in info.get("areas", {}).items():
                             for reg in registros:
                                 cur.execute(
-                                    "INSERT INTO resultados_area (pessoa_id, area, valor, animo) VALUES (%s, %s, %s, %s);",
-                                    (pessoa_id, area, reg["valor"], reg.get("animo")),
+                                    "INSERT INTO resultados_area (build_id, area, valor, animo) VALUES (%s, %s, %s, %s);",
+                                    (build_id, area, reg["valor"], reg.get("animo")),
                                 )
                                 total_resultados += 1
 
                         for reg in info.get("corridas", []):
                             cur.execute(
-                                "INSERT INTO corridas (pessoa_id, corrida, posicao) VALUES (%s, %s, %s);",
-                                (pessoa_id, reg["corrida"], reg["posicao"]),
+                                "INSERT INTO corridas (build_id, corrida, posicao) VALUES (%s, %s, %s);",
+                                (build_id, reg["corrida"], reg["posicao"]),
                             )
                             total_corridas += 1
 
                         for reg in info.get("animo", []):
                             cur.execute(
-                                "INSERT INTO animo_registros (pessoa_id, nivel, observacao) VALUES (%s, %s, %s);",
-                                (pessoa_id, reg["nivel"], reg.get("obs", "")),
+                                "INSERT INTO animo_registros (build_id, nivel, observacao) VALUES (%s, %s, %s);",
+                                (build_id, reg["nivel"], reg.get("obs", "")),
                             )
                             total_animo += 1
             messagebox.showinfo(
                 "Enviado!",
-                f"{len(self.dados)} pessoa(s), {total_resultados} resultado(s) de área, "
+                f"{len(nomes_base)} uma(s), {len(self.dados)} build(s), {total_resultados} resultado(s) de área, "
                 f"{total_corridas} corrida(s) e {total_animo} registro(s) de ânimo enviados ao banco.",
             )
         except Exception as e:
@@ -455,39 +467,45 @@ class GestaoDesempenhoApp:
 
         try:
             novos_dados = {}
-            mapa_id_para_nome = {}
+            mapa_id_para_nome_base = {}
+            mapa_build_id_para_nome = {}
             with conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT id, nome, nome_base, tag, ativo FROM pessoas;")
-                    for pessoa_id, nome, nome_base, tag, ativo in cur.fetchall():
-                        mapa_id_para_nome[pessoa_id] = nome
-                        novos_dados[nome] = _pessoa_vazia(nome_base=nome_base or nome, tag=tag or "")
-                        novos_dados[nome]["ativo"] = bool(ativo)
+                    cur.execute("SELECT id, nome FROM umas;")
+                    for uma_id, nome in cur.fetchall():
+                        mapa_id_para_nome_base[uma_id] = nome
 
-                    cur.execute("SELECT pessoa_id, area, valor, animo FROM resultados_area;")
-                    for pessoa_id, area, valor, animo in cur.fetchall():
-                        nome = mapa_id_para_nome.get(pessoa_id)
+                    cur.execute("SELECT id, uma_id, nome_build, tag, ativo FROM builds;")
+                    for build_id, uma_id, nome_build, tag, ativo in cur.fetchall():
+                        nome_base = mapa_id_para_nome_base.get(uma_id, nome_build)
+                        mapa_build_id_para_nome[build_id] = nome_build
+                        novos_dados[nome_build] = _pessoa_vazia(nome_base=nome_base, tag=tag or "")
+                        novos_dados[nome_build]["ativo"] = bool(ativo)
+
+                    cur.execute("SELECT build_id, area, valor, animo FROM resultados_area;")
+                    for build_id, area, valor, animo in cur.fetchall():
+                        nome = mapa_build_id_para_nome.get(build_id)
                         if nome:
                             novos_dados[nome]["areas"].setdefault(area, []).append(
                                 {"valor": float(valor), "animo": animo}
                             )
 
-                    cur.execute("SELECT pessoa_id, corrida, posicao FROM corridas;")
-                    for pessoa_id, corrida, posicao in cur.fetchall():
-                        nome = mapa_id_para_nome.get(pessoa_id)
+                    cur.execute("SELECT build_id, corrida, posicao FROM corridas;")
+                    for build_id, corrida, posicao in cur.fetchall():
+                        nome = mapa_build_id_para_nome.get(build_id)
                         if nome:
                             novos_dados[nome]["corridas"].append({"corrida": corrida, "posicao": posicao})
 
-                    cur.execute("SELECT pessoa_id, nivel, observacao FROM animo_registros;")
-                    for pessoa_id, nivel, observacao in cur.fetchall():
-                        nome = mapa_id_para_nome.get(pessoa_id)
+                    cur.execute("SELECT build_id, nivel, observacao FROM animo_registros;")
+                    for build_id, nivel, observacao in cur.fetchall():
+                        nome = mapa_build_id_para_nome.get(build_id)
                         if nome:
                             novos_dados[nome]["animo"].append({"nivel": nivel, "obs": observacao or ""})
 
             self.dados = novos_dados
             self.salvar_dados()  # também grava no JSON local, como backup
             self._atualizar_tudo()
-            messagebox.showinfo("Carregado!", f"{len(novos_dados)} pessoa(s) carregadas do banco de dados.")
+            messagebox.showinfo("Carregado!", f"{len(novos_dados)} build(s) carregadas do banco de dados.")
         except Exception as e:
             messagebox.showerror("Erro ao carregar", str(e))
         finally:
