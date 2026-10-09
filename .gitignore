@@ -8,7 +8,7 @@ build/
 dist/
 *.spec
 
-# Dados pessoais do app (não faz sentido versionar o histórico da sua equipe)
+# Dados pessoais do app
 dados_equipe.json
 config_app.json
 
